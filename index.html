@@ -1342,21 +1342,71 @@ window.clearCalc = function() {
   renderRows();
 };
 
+// ─── HISTÓRICO: armazenamento central ────────────────────────
+var HIST_STORE = {};
+
 function loadVHist() {
-  $('vh-list').innerHTML = '<div style="color:#5a7a5a;font-size:13px;padding:.5rem">carregando...</div>';
+  var el = $('vh-list');
+  el.innerHTML = '<div style="color:#5a7a5a;font-size:13px;padding:.5rem">carregando...</div>';
   db.ref(empBase() + '/history/' + CV.id).get().then(function(snap) {
-    if (!snap.exists()) { $('vh-list').innerHTML = '<div class="slbl">minhas medições</div><div style="color:#5a7a5a;font-size:13px;text-align:center;padding:1rem">nenhuma medição ainda</div>'; return; }
-    var entries = Object.values(snap.val()).sort(function(a, b) { return b.at.localeCompare(a.at); });
-    renderHist($('vh-list'), entries, false);
-  }).catch(function() { $('vh-list').innerHTML = '<div style="color:#c0392b;font-size:13px;padding:.5rem">erro ao carregar</div>'; });
+    HIST_STORE = {};
+    if (!snap.exists()) {
+      el.innerHTML = '<div class="slbl">minhas medições</div><div style="color:#5a7a5a;font-size:13px;text-align:center;padding:1rem">nenhuma medição ainda</div>';
+      return;
+    }
+    var raw = snap.val();
+    Object.keys(raw).forEach(function(pkey) {
+      var entry = Object.assign({}, raw[pkey], {_pkey: pkey, _vid: CV.id});
+      HIST_STORE[pkey] = entry;
+    });
+    var entries = Object.values(HIST_STORE).sort(function(a, b) { return b.at.localeCompare(a.at); });
+    renderHist(el, entries, false);
+  }).catch(function() {
+    el.innerHTML = '<div style="color:#c0392b;font-size:13px;padding:.5rem">erro ao carregar</div>';
+  });
+}
+
+function loadAdminHist() {
+  var el = $('ah-list');
+  el.innerHTML = '<div style="color:#5a7a5a;font-size:13px;padding:.5rem">carregando...</div>';
+  db.ref(empBase() + '/vendors').get().then(function(vs) {
+    if (!vs.exists()) { el.innerHTML = '<div class="slbl">histórico</div><div style="color:#5a7a5a;font-size:13px;text-align:center;padding:1rem">nenhuma medição</div>'; return; }
+    HIST_STORE = {};
+    var vids = Object.keys(vs.val());
+    var proms = vids.map(function(vid) {
+      return db.ref(empBase() + '/history/' + vid).get().then(function(hs) {
+        if (hs.exists()) {
+          var raw = hs.val();
+          Object.keys(raw).forEach(function(pkey) {
+            HIST_STORE[pkey] = Object.assign({}, raw[pkey], {_pkey: pkey, _vid: vid});
+          });
+        }
+      });
+    });
+    Promise.all(proms).then(function() {
+      var entries = Object.values(HIST_STORE).sort(function(a, b) { return b.at.localeCompare(a.at); });
+      renderHist(el, entries, true);
+    });
+  }).catch(function() {
+    el.innerHTML = '<div style="color:#c0392b;font-size:13px;padding:.5rem">erro ao carregar</div>';
+  });
 }
 
 function renderHist(el, entries, isAdmin) {
-  if (!entries.length) { el.innerHTML = '<div class="slbl">histórico</div><div style="color:#5a7a5a;font-size:13px;text-align:center;padding:1rem">nenhuma medição</div>'; return; }
-  el.innerHTML = '<div class="slbl">histórico (' + entries.length + ')</div>';
+  el.innerHTML = '';
+  if (!entries.length) {
+    el.innerHTML = '<div class="slbl">histórico</div><div style="color:#5a7a5a;font-size:13px;text-align:center;padding:1rem">nenhuma medição</div>';
+    return;
+  }
+  var hdr = document.createElement('div');
+  hdr.className = 'slbl';
+  hdr.textContent = 'histórico (' + entries.length + ')';
+  el.appendChild(hdr);
+
   entries.forEach(function(e) {
     var item = document.createElement('div');
     item.className = 'hist-item';
+
     var trs = (e.rows || []).map(function(r, i) {
       var c = calcRow(r);
       return '<tr style="background:' + (i % 2 ? '#f4f8f4' : '#fff') + '">' +
@@ -1367,29 +1417,95 @@ function renderHist(el, entries, isAdmin) {
         '<td>' + (c.ok ? pt(c.cons, 4) : '-') + '</td><td>' + (c.ok ? pt(c.proj) : '-') + '</td>' +
         '<td style="color:#1B4332;font-weight:700">' + (c.ok ? 'R$ ' + pt(c.cm2, 2) : '-') + '</td></tr>';
     }).join('');
-    var eid = 'hd-' + e.id;
-    item.innerHTML = '<div style="display:flex;justify-content:space-between;gap:8px" onclick="var d=document.getElementById(\'' + eid + '\');d.classList.toggle(\'open\')">' +
-      '<div><div style="font-size:14px;font-weight:700">' + (e.info && e.info.cl || '(sem cliente)') + '</div>' +
+
+    var eid = 'hd-' + e._pkey;
+
+    var header = document.createElement('div');
+    header.style.cssText = 'display:flex;justify-content:space-between;gap:8px;cursor:pointer;padding-bottom:2px';
+    header.innerHTML =
+      '<div><div style="font-size:14px;font-weight:700">' + ((e.info && e.info.cl) || '(sem cliente)') + '</div>' +
       '<div style="font-size:11px;color:#5a7a5a">' + [(e.info && e.info.mq), (e.info && e.info.dt)].filter(Boolean).join(' · ') + '</div>' +
-      '<div style="font-size:11px;color:#5a7a5a">' + fd(e.at) + (isAdmin ? ' · ' + e.vnome : '') + '</div></div>' +
-      '<div style="text-align:right;flex-shrink:0"><div style="font-size:16px;font-weight:700;color:#1B4332">R$ ' + pt(e.total, 4) + '</div>' +
+      '<div style="font-size:11px;color:#5a7a5a">' + fd(e.at) + (isAdmin ? ' · ' + (e.vnome||'') : '') + '</div></div>' +
+      '<div style="text-align:right;flex-shrink:0">' +
+      '<div style="font-size:16px;font-weight:700;color:#1B4332">R$ ' + pt(e.total, 4) + '</div>' +
       '<div style="font-size:10px;color:#5a7a5a">/m² · ' + (e.rows||[]).length + ' abrasivos</div>' +
-      '<div style="font-size:11px;color:#2D6A4F;margin-top:3px">▼ ver</div></div></div>' +
-      '<div class="hist-det" id="' + eid + '">' +
+      '<div style="font-size:11px;color:#2D6A4F;margin-top:3px">▼ ver</div></div>';
+    header.addEventListener('click', function() {
+      var det = document.getElementById(eid);
+      if (det) det.classList.toggle('open');
+    });
+
+    var detail = document.createElement('div');
+    detail.className = 'hist-det';
+    detail.id = eid;
+    detail.innerHTML =
       '<div style="overflow-x:auto;margin-bottom:.65rem"><table class="mtbl"><thead><tr>' +
       ['Abrasivo','Massa','Peças','Preço','Alt.Ini','Alt.Atu','Produção','Consumo','Projeção','R$/m²'].map(function(h) { return '<th>' + h + '</th>'; }).join('') +
-      '</tr></thead><tbody>' + trs + '</tbody></table></div>' +
-      '<div class="btn-row">' +
-      '<button class="btn sm outline" onclick=\'reEx("' + e.id + '","xl")\'>📊 excel</button>' +
-      '<button class="btn sm ghost" onclick=\'reEx("' + e.id + '","pdf")\'>📄 pdf</button>' +
-      '</div></div>';
+      '</tr></thead><tbody>' + trs + '</tbody></table></div>';
+
+    var btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex;gap:8px;margin-top:4px';
+
+    var btnXl = document.createElement('button');
+    btnXl.className = 'btn sm outline';
+    btnXl.textContent = '📊 excel';
+    btnXl.addEventListener('click', function(ev) {
+      ev.stopPropagation();
+      doXL(e.info, e.rows);
+    });
+
+    var btnPdf = document.createElement('button');
+    btnPdf.className = 'btn sm ghost';
+    btnPdf.textContent = '📄 pdf';
+    btnPdf.addEventListener('click', function(ev) {
+      ev.stopPropagation();
+      doPDF(e.info, e.rows);
+    });
+
+    var btnDel = document.createElement('button');
+    btnDel.className = 'btn sm';
+    btnDel.textContent = '🗑 apagar';
+    btnDel.style.cssText = 'background:#c0392b;color:#fff;border:none;margin-left:auto;padding:6px 12px;border-radius:8px;font-size:13px;cursor:pointer';
+
+    (function(entry, el_ref, item_ref, btnDel_ref) {
+      btnDel_ref.addEventListener('click', function(ev) {
+        ev.stopPropagation();
+        if (!confirm('Apagar esta medição? Não pode ser desfeito.')) return;
+        btnDel_ref.disabled = true;
+        btnDel_ref.textContent = '...';
+        db.ref(empBase() + '/history/' + entry._vid + '/' + entry._pkey).remove().then(function() {
+          item_ref.style.transition = 'opacity .25s';
+          item_ref.style.opacity = '0';
+          setTimeout(function() {
+            if (item_ref.parentNode) item_ref.parentNode.removeChild(item_ref);
+            var remaining = el_ref.querySelectorAll('.hist-item').length;
+            var slbl = el_ref.querySelector('.slbl');
+            if (slbl) slbl.textContent = 'histórico (' + remaining + ')';
+            if (remaining === 0) {
+              el_ref.innerHTML = '<div class="slbl">histórico</div><div style="color:#5a7a5a;font-size:13px;text-align:center;padding:1rem">nenhuma medição</div>';
+            }
+            toast('Medição apagada.');
+          }, 250);
+        }).catch(function(err) {
+          btnDel_ref.disabled = false;
+          btnDel_ref.textContent = '🗑 apagar';
+          toast('Erro: ' + err.message, 'err');
+        });
+      });
+    })(e, el, item, btnDel);
+
+    btnRow.appendChild(btnXl);
+    btnRow.appendChild(btnPdf);
+    btnRow.appendChild(btnDel);
+    detail.appendChild(btnRow);
+    item.appendChild(header);
+    item.appendChild(detail);
     el.appendChild(item);
-    window['_e_' + e.id] = e;
   });
 }
 
 window.reEx = function(id, type) {
-  var e = window['_e_' + id]; if (!e) return;
+  var e = HIST_STORE[id]; if (!e) return;
   if (type === 'xl') doXL(e.info, e.rows); else doPDF(e.info, e.rows);
 };
 
